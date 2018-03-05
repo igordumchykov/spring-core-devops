@@ -1,0 +1,288 @@
+--------------------------------------------------------------------------------
+connect to instance
+--------------------------------------------------------------------------------
+sudo su
+yum install wget
+wget --no-cookies --no-check-certificate --header "Cookie: oraclelicense=accept-securebackup-cookie" "http://download.oracle.com/otn-pub/java/jdk/8u161-b12/2f38c3b165be4555a1fa6e98c45e0808/jdk-8u161-linux-x64.tar.gz"
+tar xzf jdk-8u161-linux-x64.tar.gz
+cp -r ./jdk1.8.0_161/ /opt/
+alternatives --install /usr/bin/java java /opt/jdk1.8.0_161/bin/java 2
+alternatives --config java
+        select 1
+alternatives --install /usr/bin/java java /opt/jdk1.8.0_161/bin/jar 2
+alternatives --install /usr/bin/java java /opt/jdk1.8.0_161/bin/javac 2
+alternatives --set jar /opt/jdk1.8.0_161/bin/jar
+alternatives --set jar /opt/jdk1.8.0_161/bin/javac
+
+sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+sudo rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+yum install jenkins
+service jenkins start
+ps -ef | grep jenkins
+
+go to browser: publicIp:8080
+less /var/lib/jenkins/secrets/initialAdminPassword
+
+sudo yum install git
+
+yum install httpd
+service httpd start
+cd /etc/httpd/conf
+
+su -s /bin/bash jenkins
+cd /var/lib/jenkins
+mkdir .ssh
+ssh-keygen -t rsa -C 'jenkins@example.com'
+
+ in git repo add deploy key from generated rsa.pub
+
+ go to Jenkins -> credentials -> global -> add credentials:
+ Kind: SSH Username...
+ Private key: From Jenkins master ./ssh
+ add some description
+ save
+
+ Go to Manage Jenkins -> Global tools configuration -> Maven:
+ Name: Maven 3.3.9
+ apply
+ save
+
+ Go to New Item:
+ Project name: <some Name>
+ check GitHub Project
+ add url (from browser)
+ Source Code Management: Git
+ copy ssh repo url and select previously added Jenkins credentials
+ Build triggers: git hub hook trigger ...
+ Build: choose maven version (3.3.9), goals: clean install
+ apply, save
+ go to home page and click Build now
+
+ go to github -> setting -> web hooks:
+ add web hook:
+ add jenkins url/github-webhook/
+ save
+--------------------------------------------------------------------------------
+Install docker and artifacory
+--------------------------------------------------------------------------------
+in new instance in AWS:
+sudo yum update
+sudo tee /etc/yum.repos.d/docker.repo <<- 'EOF'
+[dockerrepo]
+name=Docker Repository
+baseurl=https://yum.dockerproject.org/repo/main/centos/7/
+enabled=1
+gpgcheck=1
+gpgkey=https://yum.dockerproject.org/gpg
+EOF
+
+sudo yum install --setopt=obsoletes=0 \
+   docker-ce-17.03.2.ce-1.el7.centos.x86_64 \
+   docker-ce-selinux-17.03.2.ce-1.el7.centos.noarch
+
+systemctl enable docker.service
+sudo systemctl start docker
+
+check ps -ef | grep docker (should be 2 processes: docker and daemon)
+test:
+docker run --rm hello-world
+
+sudo docker run -d --name jfrog_container -p 8081:8081 \
+-v /var/opt/jfrog/artifactory/data:/var/opt/jfrog/artifactory/data \
+-v /var/opt/jfrog/artifactory/logs:/var/opt/jfrog/artifactory/logs \
+-v /var/opt/jfrog/artifactory/etc:/var/opt/jfrog/artifactory/etc \
+docker.bintray.io/jfrog/artifactory-oss:latest
+
+go to public ip: 8081 (open if need)
+if need set up apache httpd upfront artifactory
+login: admin, password
+
+login artifactory -> Create Repository in login ribbon -> save (saying, libs-snapshot-local)
+go to Artifacts -> Set me Up -> Choose maven -> copy xml -> put it to project pom.xml:
+
+example:
+<distributionManagement>
+    <repository>
+        <id>releases</id>
+        <name>f8b16cd22e82-releases</name>
+        <url>http://18.196.172.0:8081/artifactory/libs-release-local</url>
+    </repository>
+    <snapshotRepository>
+        <id>snapshots</id>
+        <name>f8b16cd22e82-snapshots</name>
+        <url>http://18.196.172.0:8081/artifactory/libs-snapshot-local</url>
+    </snapshotRepository>
+</distributionManagement>
+
+do to edit profile -> copy encrypted password
+go to maven settings.xml add:
+
+example:
+<servers>
+    <server>
+        <id>releases</id>
+        <username>admin</username>
+        <password>AP9qiKYxdpHyhR3B8sCWLfXC2G9</password>
+    </server>
+    <server>
+        <id>snapshots</id>
+        <username>admin</username>
+        <password>AP9qiKYxdpHyhR3B8sCWLfXC2G9</password>
+    </server>
+</servers>
+
+run maven deploy task
+after that, artifact should be uploaded to artifactory
+--------------------------------------------------------------------------------
+link jenkins:
+--------------------------------------------------------------------------------
+run jenkins instance
+sudo su
+su -s /bin/bash jenkins
+cd /var/lib/jenkins
+cd .m2
+vi settings.xml
+copy local maven settings.xml
+
+example:
+
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+ http://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+    <servers>
+        <server>
+            <id>releases</id>
+            <username>admin</username>
+            <password>AP9qiKYxdpHyhR3B8sCWLfXC2G9</password>
+        </server>
+        <server>
+            <id>snapshots</id>
+            <username>admin</username>
+            <password>AP9qiKYxdpHyhR3B8sCWLfXC2G9</password>
+        </server>
+    </servers>
+    <profiles>
+        <profile>
+            <id>aws</id>
+            <repositories>
+                <repository>
+                    <id>releases</id>
+                    <url>http://18.196.172.0:8081/artifactory/libs-release-local</url>
+                    <releases>
+                        <enabled>true</enabled>
+                    </releases>
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
+                </repository>
+                <repository>
+                    <id>snapshots</id>
+                    <url>http://18.196.172.0:8081/artifactory/libs-release-local</url>
+                    <releases>
+                        <enabled>false</enabled>
+                    </releases>
+                    <snapshots>
+                        <enabled>true</enabled>
+                    </snapshots>
+                </repository>
+            </repositories>
+          </profile>
+      </profiles>
+
+      <activeProfiles>
+        <activeProfile>aws</activeProfile>
+    </activeProfiles>
+</settings>
+
+save
+start the Build
+if files are not pulling from jfrog, remove: rm -rf repository/
+start build again
+
+--------------------------------------------------------------------------------
+setup prod db:
+--------------------------------------------------------------------------------
+create instance
+install docker
+
+sudo docker run -d --name prod_mysql \
+-p 3306:3306 \
+-v /var/lib/mysql:/var/lib/mysql \
+-e MYSQL_ROOT_PASSWORD=tiger  \
+mysql/mysql-server:latest
+
+#Connect to container
+sudo docker exec -it prod_mysql bash
+
+# Connect mySql
+mysql -p
+
+#create database
+CREATE DATABASE springguru
+
+~
+attention: use '%' instead of localhost and also, open port 3306
+--------------------------------------------------------------------------------
+setup application server:
+--------------------------------------------------------------------------------
+create instance
+yum update
+sudo yum install java-1.8.0-openjdk
+check java version, if more than 1:
+/usr/sbin/alternatives --config java
+choose default java version
+install wget
+go to artifactory copy jar url (choose jar, click button near Name)
+wget <paste artifact url>
+
+export env variables:
+
+#Bash env
+export SPRING_DATASOURCE_URL=jdbc:mysql://35.157.212.251:3306/springguru
+export SPRING_DATASOURCE_USERNAME=spring_guru_owner
+export SPRING_DATASOURCE_PASSWORD=GuruPassword
+
+or encrypted:
+export jasypt_encryptor_password=password
+export SPRING_DATASOURCE_PASSWORD="ENC(gjApXsW2XPpB4VJFTrQY5culejX9XPhf)"
+
+run app:
+java -jar ./<yourjar>.jar --spring.jpa.hibernate.ddl-auto=update
+--------------------------------------------------------------------------------
+run application as linux service:
+--------------------------------------------------------------------------------
+in folder where is jar, add application.propertis:
+
+spring.datasource.url=jdbc:mysql://18.196.54.145:3306/springguru
+spring.datasource.username=spring_guru_owner
+spring.datasource.password=GuruPassword
+spring.jpa.hibernate.ddl-auto=update
+
+1. change to root - sudo su
+2. cd /etc/systemd/system
+3. use vi to create file below
+4. run systemctl daemon-reload (to reload service defs)
+5. to start on boot run: systemctl enable springboot.service
+6. to start: systemctl start springboot
+
+## View console output
+tail -f  /var/log/messages
+
+### File name springboot.service ####
+
+[Unit]
+Description=Spring Boot Service
+After=syslog.target
+
+[Service]
+User=ec2-user
+# set dir to location of application.properties and springboot jar
+WorkingDirectory=/home/ec2-user
+ExecStart=/bin/java -jar  spring-core-devops-1.0-RELEASE.jar
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target
+--------------------------------------------------------------------------------
